@@ -1,0 +1,28 @@
+#!/usr/bin/env php
+<?php
+
+if (count($argv) < 2) {
+    echo '依赖分析传参错误';
+    exit(1);
+}
+
+$path = $argv[1];
+$content = file_get_contents($path);
+$arr = json_decode($content, true);
+
+if (json_last_error() !== JSON_ERROR_NONE) {
+    echo 'JSON 格式不正确';
+    exit(1);
+}
+
+
+$str = [];
+foreach ($arr as $k => $v) {
+	if (!in_array($k, ['api_mgr', 'bole', 'neitui_bole', 'neitui_hr', 'shared', 'system', 'zhichang', 'custom/base', 'custom/old_base', 'custom/webank_bole']) && preg_match('#^custom/\w+_neitui_(bole|hr)$#', $k) == false) {
+	    echo '不允许依赖 ' . $k . '！';
+		exit(1);
+	}
+    $str[] = $k . ':' . $v;
+}
+
+echo implode(PHP_EOL, $str);

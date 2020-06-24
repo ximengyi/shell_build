@@ -1,0 +1,105 @@
+#!/bin/bash
+
+colorStr()
+{
+    if [ "$1" = 'red' ];then
+        echo -e '\033[1;31m'$2'\033[0m'
+        msgMattermost red "$2"
+    elif [ "$1" = 'green' ];then
+        echo -e '\033[1;32m'$2'\033[0m'
+    elif [ "$1" = 'yellow' ];then
+        echo -e '\033[33m'$2'\033[0m'
+    elif [ "$1" = 'blue' ];then
+        echo -e '\033[34m'$2'\033[0m'
+    elif [ "$1" = 'bold' ];then
+        echo -e '\033[1m'$2'\033[0m'
+    fi
+}
+
+newline=$'\n'
+
+msgMattermost()
+{
+    # if [ "$1" = 'red' ];then
+        # color="#FF3030"
+    # elif [ "$1" = 'green' ];then
+        # color="#43CD80"
+    # elif [ "$1" = 'yellow' ];then
+        # color="#EEEE00"
+    # elif [ "$1" = 'blue' ];then
+        # color="#87CEFF"
+    # elif [ "$1" = 'bold' ];then
+        # color="#8B7765"
+    # fi
+
+
+    # text=$(echo "$2" | sed 's/\\/\\\\/g' | sed 's/\"/\\"/g')
+
+    # url='http://mattermost.gitlab.toc/hooks/eccwqe8w13dutk64msiiqphtua'
+
+    # payload='payload={
+        # "username":"Docker兔女郎",
+        # "text":"@'$GITLAB_USER_NAME'",
+        # "attachments":[
+            # {
+            # "color":"'$color'",
+            # "title":"'$CI_PROJECT_PATH_SLUG'",
+            # "title_link":"'$CI_PROJECT_URL'/branches/",
+            # "text":"'"$text"'"
+            # }
+        # ]
+    # }'
+
+    # curl -X POST -d "$payload" "$url"
+}
+
+DOCKER_HUB=hub.ifchange.com/
+IMAGE_NAME_AND_TAG=${CI_PROJECT_PATH_SLUG}:${CI_COMMIT_REF_NAME#*/}
+IMAGE_PUSH_PATH=${DOCKER_HUB}toc/${IMAGE_NAME_AND_TAG}
+
+echo
+colorStr blue ">>> IMAGE_NAME_AND_TAG is ${IMAGE_NAME_AND_TAG}"
+colorStr blue ">>> IMAGE_PUSH_PATH is ${IMAGE_PUSH_PATH}"
+echo
+
+image_ids=`docker image ls | grep $CI_PROJECT_PATH_SLUG | awk {'print $3'}`
+
+if [ -n "$image_ids" ];then
+    image_ids=($CI_PROJECT_PATH_SLUG ${image_ids[@]})
+
+    colorStr green "查找运行的容器并停止它..."
+    for var in ${image_ids[@]}
+    do
+        container_ids=`docker ps -a | grep $var | awk {'print $1'}`
+        if [ -n "$container_ids" ];then
+            colorStr blue ">>> 停止并删除容器 ${container_ids[@]}"
+            docker stop ${container_ids[@]}
+            docker rm -f ${container_ids[@]}
+        fi
+    done
+else
+    colorStr red '未找到目标镜像，无法启动...'
+    exit 1
+fi
+
+echo
+
+if [ -n "$2" ];then
+    colorStr green "启动容器，映射主机端口到容器：${1}->9000，${2}->9001"
+    docker run -p ${1}:9000 -p ${2}:9001 -e CI_ENV="development" --name ${CI_PROJECT_PATH_SLUG} -v /opt/wwwroot/conf:/opt/wwwroot/conf:ro -v /opt/wwwroot/fe/template/toc:/opt/wwwroot/fe/template/toc:ro -v /opt/logs:/opt/logs -v /opt/userhome:/opt/userhome:ro -d $IMAGE_PUSH_PATH
+    if [[ $? != 0 ]];then
+        colorStr red "容器启动失败"
+        exit 1
+    fi
+    msgMattermost blue "容器启动成功，映射主机端口到容器：${1}->9000，${2}->9001"
+else
+    colorStr green "启动容器，映射主机端口到容器：${1}->9000"
+    docker run -p ${1}:9000 -e CI_ENV="development" --name ${CI_PROJECT_PATH_SLUG} -v /opt/wwwroot/conf:/opt/wwwroot/conf:ro -v /opt/wwwroot/fe/template/toc:/opt/wwwroot/fe/template/toc:ro -v /opt/logs:/opt/logs -v /opt/userhome:/opt/userhome:ro -d $IMAGE_PUSH_PATH
+    if [[ $? != 0 ]];then
+        colorStr red "容器启动失败"
+        exit 1
+    fi
+    msgMattermost blue "容器启动成功，映射主机端口到容器：${1}->9000"
+fi
+
+

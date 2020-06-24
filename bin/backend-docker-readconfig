@@ -1,0 +1,51 @@
+#!/usr/bin/env php
+<?php
+
+if (count($argv) < 3) {
+    echo '依赖分析传参错误';
+    exit(1);
+}
+
+$path = $argv[1];
+$item = $argv[2];
+
+$content = file_get_contents($path);
+$arr = json_decode($content, true);
+
+if (json_last_error() !== JSON_ERROR_NONE) {
+    echo '.config文件 JSON 格式不正确';
+    exit(1);
+}
+
+$output= [];
+switch ($item) {
+	case 'docker-config':
+		$output[] = empty($arr['docker-config']) ? 'default' : $arr['docker-config'];
+	    break;
+	case 'process':
+        if (!empty($arr['process'])) {
+            foreach ($arr['process'] as $k => $v) {
+                $v && $output[] = 'PROCESS_' . strtoupper($k) . '=' . $v;
+            }
+        } else {
+            echo '.config文件未配置 process 项，默认启动 fpm_www 模式' . PHP_EOL;
+            $output[] = 'PROCESS_FPM_WWW=1';
+        }
+	    break;
+    case 'crontab': 
+        if (count($argv) < 5) {
+            echo '依赖分析传参错误';
+            exit(1);
+        }
+
+		$php_cli = $argv[3];
+		$project_real_path = $argv[4];
+
+        if (!empty($arr['crontab'])) {
+            foreach ($arr['crontab'] as $k => $v) {
+                $output[] = $v . '    . /opt/docker-config/export_env_var; ' . $php_cli . ' ' . $project_real_path . '/' . $k . ' >/dev/null 2>&1';
+            }
+        }
+		break;
+}
+echo implode(PHP_EOL, $output);

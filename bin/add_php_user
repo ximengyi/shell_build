@@ -1,0 +1,6 @@
+#!/bin/bash
+useradd -d /opt/userhome/${1} -m -g nobody -G dev,php $1
+passwd ${1}
+chmod 755 /opt/userhome/${1}
+smbpasswd -a ${1}
+

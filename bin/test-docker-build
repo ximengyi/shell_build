@@ -1,0 +1,413 @@
+#!/bin/bash
+
+colorStr()
+{
+    if [ "$1" = 'red' ];then
+        echo -e '\033[1;31m'$2'\033[0m'
+        msgMattermost red "$2"
+    elif [ "$1" = 'green' ];then
+        echo -e '\033[1;32m'$2'\033[0m'
+    elif [ "$1" = 'yellow' ];then
+        echo -e '\033[33m'$2'\033[0m'
+    elif [ "$1" = 'blue' ];then
+        echo -e '\033[34m'$2'\033[0m'
+    elif [ "$1" = 'bold' ];then
+        echo -e '\033[1m'$2'\033[0m'
+    fi
+}
+
+newline=$'\n'
+
+msgMattermost()
+{
+    if [ "$1" = 'red' ];then
+        color="#FF3030"
+    elif [ "$1" = 'green' ];then
+        color="#43CD80"
+    elif [ "$1" = 'yellow' ];then
+        color="#EEEE00"
+    elif [ "$1" = 'blue' ];then
+        color="#87CEFF"
+    elif [ "$1" = 'bold' ];then
+        color="#8B7765"
+    fi
+
+
+    text=$(echo "$2" | sed 's/\\/\\\\/g' | sed 's/\"/\\"/g' | sed 's/&/ and /g' )
+
+    url='http://mattermost.gitlab.toc/hooks/eccwqe8w13dutk64msiiqphtua'
+
+    payload='payload={
+        "username":"Docker小女仆",
+        "text":"@'$GITLAB_USER_NAME'",
+        "attachments":[
+            {
+            "color":"'$color'",
+            "title":"'$CI_PROJECT_PATH_SLUG'",
+            "title_link":"'$CI_PROJECT_URL'/branches/",
+            "text":"'"$text"'"
+            }
+        ]
+    }'
+
+    curl -X POST -d "$payload" "$url"
+}
+
+gitDir="git@gitlab.zhinanzhen.wiki:backend"
+
+pullBranch(){
+    if [[ `git branch | grep $branch_release_name` ]]; then
+        colorStr blue ">>> del branch $1"
+        git branch -q -D $1
+    fi
+    colorStr blue ">>> checkout to ${1} and pull"
+    git checkout -q $1
+    git pull -q
+}
+
+pullTag(){
+    if [ "$2" = 0 ];then
+        colorStr blue ">>> del tag ${1} and pull"
+        git tag -d $1
+        git pull -q
+    fi
+    colorStr blue ">>> checkout to $1"
+    git checkout -q $1
+}
+
+currentBranch(){
+    # 获取当前分支
+    git rev-parse --abbrev-ref HEAD
+}
+
+pullBackendProject()
+{
+    cd backend
+
+    if [[ ! -d "$1" ]];then
+        new=1
+        git clone $gitDir/$1.git $1
+        cd $1
+    elif [[ ! -d "${1}/.git" ]];then
+        new=1
+        rm -rf $1
+        git clone $gitDir/$1.git $1
+        cd $1
+    else
+        new=0
+        cd $1
+
+        git reset HEAD .
+        git checkout .
+        $currentBranch=`currentBranch`
+        if [ "$currentBranch" != "master" ];then
+            colorStr blue '>>> checkout to master'
+            git checkout master
+        fi
+
+        colorStr blue '>>> pull master and fetch -p'
+        git pull
+        git fetch -p
+
+        branchNameArr=`git branch -vv | grep -E ': gone]|: 丢失]' | awk '{print $1}'`;
+        if [[ -n "$branchNameArr" ]];then
+            colorStr blue '>>> clean up overdue branchs'
+            git branch -D $branchNameArr
+        fi
+    fi
+
+    # 依次序检查release hotfix tag
+    branch_release_name="release/$2"
+    branch_hotfix_name="hotfix/$2"
+    tag_name="v$2"
+
+    if [[ `git branch -r | grep $branch_release_name` ]]; then
+        colorStr blue ">>> the branch $branch_release_name exists"
+        pullBranch $branch_release_name
+    elif [[ `git branch -r | grep $branch_hotfix_name` ]]; then
+        colorStr blue ">>> the branch $branch_hotfix_name exists"
+        pullBranch $branch_hotfix_name
+    elif [[ `git ls-remote -t | grep $tag_name` ]]; then
+        colorStr blue ">>> the tag $tag_name already exists"
+        pullTag $tag_name $new
+    else
+        colorStr red "项目 ${1} 的 ${2} hotfix|release分支或者tag都不存在"
+        exit 1
+    fi
+
+    cd $CI_PROJECT_DIR
+}
+
+echo
+colorStr green "定义全局变量"
+DOCKER_HUB=127.0.0.1:50000/
+PROJECT_NAME=${CI_PROJECT_PATH#*/}
+PROJECT_NAME_AND_TAG=${PROJECT_NAME}:${CI_COMMIT_REF_NAME#*/}
+IMAGE_NAME_AND_TAG=${CI_PROJECT_PATH_SLUG}:${CI_COMMIT_REF_NAME#*/}
+PROJECT_REAL_PATH=/opt/wwwroot/toc/${PROJECT_NAME}
+IMAGE_PUSH_PATH=${DOCKER_HUB}toc/${IMAGE_NAME_AND_TAG}
+
+colorStr blue ">>> PROJECT_NAME_AND_TAG is ${PROJECT_NAME_AND_TAG}"
+colorStr blue ">>> IMAGE_NAME_AND_TAG is ${IMAGE_NAME_AND_TAG}"
+colorStr blue ">>> PROJECT_REAL_PATH is ${PROJECT_REAL_PATH}"
+colorStr blue ">>> IMAGE_PUSH_PATH is ${IMAGE_PUSH_PATH}"
+
+echo 
+colorStr green "开始必要的验证和配置检查"
+
+if [[ "$CI_PROJECT_NAMESPACE" != 'backend' && ! "$CI_PROJECT_NAMESPACE" =~ ^'backend/' ]];then
+    colorStr red "${CI_PROJECT_NAMESPACE} 不是一个后端项目"
+    exit 1
+fi
+
+master_last_commit=`git log -1 --oneline --no-merges remotes/origin/master`
+log_list=`git log --oneline --no-merges ${master_last_commit%% *}.. | awk '{$1="1.";print $0}'`
+
+if [ -z "$log_list" ];then
+    self_last_commit=`git log -1 --oneline --no-merges`
+    if [ "$master_last_commit" == "$self_last_commit" ];then
+        colorStr red '没有更新，不需要推送'
+        exit
+    else
+        colorStr red "未找到master最后一次提交${master_last_commit}，请先rebase master"
+        exit 1
+    fi
+fi
+
+if [[ ! "$CI_COMMIT_REF_NAME" =~ ^(hotfix|release)\/20[0-9]{6}$ ]];then
+    colorStr red "项目名称 ${CI_COMMIT_REF_NAME} 不匹配 ^(hotfix|release)/20[0-9]{6}$ 规则"
+    exit 1
+fi
+
+if [ ! -f .rely.json ];then
+    colorStr red '.rely.json 文件不存在'
+    exit 1
+fi
+colorStr blue ">>> 验证通过"
+
+echo 
+colorStr green "加载并验证 .rely.json 文件"
+colorStr yellow '========= load .rely.json ========'
+rely=`backend-docker-readrely .rely.json`
+if [[ $? != 0 ]];then
+    colorStr red "$rely"
+    exit 1
+fi
+
+RELY_PROJECT=($rely)
+
+#验证依赖项目配置是否合法
+if [ $RELY_PROJECT ];then
+    for var in ${RELY_PROJECT[@]}
+    do
+        colorStr blue ">>> $var"
+        if [[ ! "$var" =~ ^[a-z_/\\-]+:20[0-9]{6}$ ]];then
+            colorStr red "${var} 不是一个有效的依赖项目"
+            exit 1
+        fi
+    done
+fi
+colorStr yellow '=========== load end ==========='
+
+echo
+colorStr green "将当前目录复制到 ${CI_PROJECT_PATH}"
+mkdir -p $CI_PROJECT_PATH
+find -maxdepth 1 \! -name backend \! -name . -exec mv -f {} $CI_PROJECT_PATH \;
+
+echo 
+if [ $RELY_PROJECT ];then
+    colorStr green '开始拉取依赖项目'
+
+    for var in ${RELY_PROJECT[@]}
+    do
+        project=${var%:*}
+        tag=${var#*:}
+        pullBackendProject $project $tag
+    done
+
+    echo
+    colorStr green "分析以下项目之间的依赖"
+    RELY_PROJECT+=($PROJECT_NAME_AND_TAG)
+    echo ${RELY_PROJECT[@]}
+    
+    res=`backend-docker-relyparse backend ${RELY_PROJECT[@]}`
+    if [[ $? != 0 ]];then
+        colorStr red "$res"
+        exit 1
+    else
+        colorStr blue ">>> $res"
+    fi
+
+fi
+
+echo
+colorStr green "加载 docker-config 配置"
+
+git clone $gitDir/support/docker-config.git docker-config 
+if [ -f $CI_PROJECT_PATH/.config.json ];then
+    docker_config_item=`backend-docker-readconfig "${CI_PROJECT_PATH}/.config.json" docker-config`
+    if [[ $? != 0 ]];then
+        colorStr red "$docker_config_item"
+        exit 1
+    fi
+else
+	docker_config_item='default'
+fi
+
+if [ "$docker_config_item" == "default" ];then
+    colorStr blue ">>> 未自定义配置，使用 default 配置"
+else
+    colorStr blue ">>> 将从 ${docker_config_item} 配置中加载"
+    if [ -d "docker-config/${docker_config_item}" ];then
+        colorStr blue ">>> 将自定义配置从 ${docker_config_item} 目录复制到 default"
+        cp -rf docker-config/${docker_config_item}/* docker-config/default/ 
+    else
+        colorStr red ">>> 自定义配置 docker-config/${docker_config_item} 不存在"
+        exit 1
+    fi
+fi
+
+if [ ! -d docker-config/default ];then
+    colorStr red 'docker-config/default 目录不存在'
+    exit 1
+fi
+
+if [ ! -f docker-config/default/run.sh ];then
+    colorStr red 'docker-config/default/run.sh 文件不存在'
+    exit 1
+fi
+
+if [ ! -f docker-config/default/config ];then
+    colorStr red 'docker-config/default/config 文件不存在'
+    exit 1
+fi
+
+colorStr yellow '===== load docker-config/default/config ====='
+while read line;do
+    colorStr blue ">>> $line"
+    eval "$line"
+done < docker-config/default/config
+
+if [ -z "$IMAGE_FROM" ];then
+    colorStr red '未定义 $IMAGE_FROM'
+    exit 1
+fi
+if [ -z "$PHP_FPM" ];then
+    colorStr red '未定义 $PHP_FPM'
+    exit 1
+fi
+if [ -z "$PHP_CLI" ];then
+    colorStr red '未定义 $PHP_CLI'
+    exit 1
+fi
+if [ -z "$CRONTAB_START" ];then
+    colorStr red '未定义 $CRONTAB_START'
+    exit 1
+fi
+colorStr yellow '================= load end =================='
+
+echo
+
+if [ -f $CI_PROJECT_PATH/.config.json ];then
+    colorStr green "加载 "$CI_PROJECT_PATH"/.config 配置"
+    cd $CI_PROJECT_PATH 
+    colorStr yellow '========= load .config.json ========'
+    process=`backend-docker-readconfig .config.json process`
+    if [[ $? != 0 ]];then
+        colorStr red "$process"
+        exit 1
+    fi
+    
+    crontab=`backend-docker-readconfig .config.json crontab "$PHP_CLI" "$PROJECT_REAL_PATH"`
+    if [[ $? != 0 ]];then
+        colorStr red "$crontab"
+        exit 1
+    fi
+    if [ -n "$crontab" ];then
+		echo "$crontab" >> .crontab
+		colorStr yellow '----- .crontab -----'
+		cat .crontab
+		colorStr yellow '--------------------'
+        PROJECT_CONFIG=($process PROCESS_CRONTAB=1)
+    else
+        PROJECT_CONFIG=($process)
+	fi
+
+    if [ $PROJECT_CONFIG ];then
+        for var in ${PROJECT_CONFIG[@]}
+        do
+            colorStr blue ">>> $var"
+        done
+    fi
+    colorStr yellow '================ load end ==============='
+    cd $CI_PROJECT_DIR
+else
+    colorStr blue $CI_PROJECT_PATH"/.config 配置不存在，默认启动 fpm_www 模式"
+    PROJECT_CONFIG=(PROCESS_FPM_WWW=1)
+fi
+echo 
+
+#make Dockerfile and prepare data
+colorStr green '生成DockerFile'
+cd $CI_PROJECT_DIR
+echo 'FROM '${DOCKER_HUB}${IMAGE_FROM} > Dockerfile
+echo 'ENV PHP_FPM="'${PHP_FPM}'" PHP_CLI="'${PHP_CLI}'" CRONTAB_START="'${CRONTAB_START}'"' >> Dockerfile
+if [ $PROJECT_CONFIG ];then
+    echo 'ENV '${PROJECT_CONFIG[@]} >> Dockerfile
+fi
+echo 'ENV PROJECT_NAME="'${PROJECT_NAME}'" PROJECT_REAL_PATH="'${PROJECT_REAL_PATH}'"' >> Dockerfile
+echo 'COPY backend /opt/wwwroot/toc' >> Dockerfile
+echo 'COPY docker-config/default /opt/docker-config' >> Dockerfile
+echo 'RUN mkdir -p /opt/php_cache && chown -R nobody:nobody /opt/php_cache && mkdir -p /opt/log && cd /opt/wwwroot/toc/shared && composer dump-autoload --optimize' >> Dockerfile
+echo 'WORKDIR '${PROJECT_REAL_PATH} >> Dockerfile
+echo 'CMD ["/opt/docker-config/run.sh"]' >> Dockerfile
+
+
+colorStr yellow '===== DockerFile ====='
+cat Dockerfile
+colorStr yellow '======================'
+
+echo
+
+#delete old image and container
+
+image_ids=`docker image ls | grep $CI_PROJECT_PATH_SLUG | awk {'print $3'}`
+
+if [ -n "$image_ids" ];then
+    image_ids=($CI_PROJECT_PATH_SLUG $image_ids)
+
+    colorStr green "存在过期镜像，开始删除..."
+    for var in ${image_ids[@]}
+    do
+        container_ids=`docker ps -a | grep $var | awk {'print $1'}`
+        if [ -n "$container_ids" ];then
+            colorStr blue ">>> 停止并删除容器 $container_ids"
+            docker stop $container_ids
+            docker rm -f $container_ids
+        fi
+
+        if [ "$var" != "$CI_PROJECT_PATH_SLUG" ];then
+            colorStr blue ">>> 删除镜像 $var"
+            docker rmi $var
+        fi
+    done
+else
+    colorStr green "未发现过期镜像..."
+fi
+
+#build image
+echo
+colorStr green '开始构建镜像'
+docker build -t ${IMAGE_PUSH_PATH} ./
+
+if [[ $? != 0 ]];then
+    colorStr red "镜像构建失败"
+    exit 1
+fi
+
+echo
+colorStr green '将镜像推到远程'
+docker push ${IMAGE_PUSH_PATH}
+
+msg="###### 提测镜像${newline}[${IMAGE_PUSH_PATH}](${CI_PROJECT_URL}/pipelines/${CI_PIPELINE_ID})${newline}###### 提测内容${newline}${log_list}"
+msgMattermost blue "$msg"
